@@ -458,61 +458,90 @@ tabButtons.forEach(btn => {
   });
 });
 
-/* ---------- Blogs ---------- */
-// Add a new post the same way you add a favorite-things image:
-// 1. Drop the file (markdown or plain text) into a "blogs" folder next to this HTML file.
-// 2. Add one entry below with a title, date (YYYY-MM-DD), and the file path.
-// Newest date shows at the top automatically.
-const blogPosts = [
-  { title: 'Hello, World', date: '2026-09-01', file: 'blogs/example-post.md' },
-];
+/* ---------- Blogs (read live from GitHub) ---------- */
+// Just drop a new .md file into the "blogs" folder in this repo and it appears —
+// no need to touch this file again.
+const GITHUB_CONFIG = {
+  owner: 'ajcodde',
+  repo: 'asmitajain',
+  branch: 'main',
+  path: 'blogs'
+};
 
-const sortedPosts = [...blogPosts].sort((a, b) => b.date.localeCompare(a.date));
+// Files should be named YYYY-MM-DD-anything.md, e.g. 2026-09-01-first-post.md
+// Only the date is read from the filename — the title comes from the first
+// "# Heading" line inside the file itself.
+const FILENAME_PATTERN = /^(\d{4}-\d{2}-\d{2})-.*\.md$/i;
 
 const blogListEl = document.getElementById('blog-list');
 const blogStatusEl = document.getElementById('blog-status');
 const blogListView = document.getElementById('blog-list-view');
 const blogPostView = document.getElementById('blog-post');
 
-if (sortedPosts.length === 0) {
-  blogStatusEl.textContent = 'No posts yet — add one to the blogPosts list in the code to get started.';
-} else {
-  blogStatusEl.style.display = 'none';
-  sortedPosts.forEach(post => {
-    const card = document.createElement('button');
-    card.className = 'blog-card';
-    card.innerHTML = `
-      <div class="blog-title">${post.title}</div>
-      <div class="blog-date">${formatDate(post.date)}</div>
-    `;
-    card.addEventListener('click', () => openPost(post));
-    blogListEl.appendChild(card);
-  });
+function extractTitle(markdown, filename) {
+  const heading = markdown.match(/^#\s+(.+)$/m);
+  if (heading) return heading[1].trim();
+  // fallback if the file has no "# Heading" line: derive something readable from the filename
+  const withoutDate = filename.replace(/^\d{4}-\d{2}-\d{2}-/, '').replace(/\.md$/i, '');
+  return withoutDate.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
-async function openPost(post) {
+async function loadBlogs() {
+  const apiUrl = `https://api.github.com/repos/${GITHUB_CONFIG.owner}/${GITHUB_CONFIG.repo}/contents/${GITHUB_CONFIG.path}?ref=${GITHUB_CONFIG.branch}`;
+
+  try {
+    const res = await fetch(apiUrl);
+    if (!res.ok) throw new Error(`GitHub API returned ${res.status}`);
+    const files = await res.json();
+    const candidates = files.filter(f => f.type === 'file' && FILENAME_PATTERN.test(f.name));
+
+    // fetch each file's content up front so we can read its title and cache the body
+    const posts = await Promise.all(candidates.map(async f => {
+      const [, dateStr] = f.name.match(FILENAME_PATTERN);
+      const markdown = await (await fetch(f.download_url)).text();
+      return { title: extractTitle(markdown, f.name), date: dateStr, markdown };
+    }));
+
+    posts.sort((a, b) => b.date.localeCompare(a.date)); // newest first, oldest last
+
+    if (posts.length === 0) {
+      blogStatusEl.textContent = 'No posts yet — add a file named YYYY-MM-DD-title.md to the blogs folder on GitHub.';
+      return;
+    }
+
+    blogStatusEl.style.display = 'none';
+    posts.forEach(post => {
+      const card = document.createElement('button');
+      card.className = 'blog-card';
+      card.innerHTML = `
+        <div class="blog-title">${post.title}</div>
+        <div class="blog-date">${formatDate(post.date)}</div>
+      `;
+      card.addEventListener('click', () => openPost(post));
+      blogListEl.appendChild(card);
+    });
+  } catch (err) {
+    blogStatusEl.textContent = 'Could not load posts from GitHub.';
+    console.error(err);
+  }
+}
+
+function openPost(post) {
   document.getElementById('blog-post-title').textContent = post.title;
   document.getElementById('blog-post-date').textContent = formatDate(post.date);
-  const bodyEl = document.getElementById('blog-post-body');
-  bodyEl.innerHTML = 'Loading…';
+  const bodyMarkdown = post.markdown.replace(/^#\s+.+$/m, '').trim();
+  document.getElementById('blog-post-body').innerHTML = marked.parse(bodyMarkdown);
 
   blogListView.style.display = 'none';
   blogPostView.style.display = 'block';
-
-  try {
-    const res = await fetch(post.file);
-    const text = await res.text();
-    bodyEl.innerHTML = post.file.endsWith('.md') ? marked.parse(text) : `<p>${text.replace(/\n/g, '<br>')}</p>`;
-  } catch (err) {
-    bodyEl.innerHTML = 'Could not load this post.';
-    console.error(err);
-  }
 }
 
 document.getElementById('blog-back').addEventListener('click', () => {
   blogPostView.style.display = 'none';
   blogListView.style.display = 'block';
 });
+
+loadBlogs();
 
 function formatDate(dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number);
